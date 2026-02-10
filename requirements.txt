@@ -1,0 +1,12 @@
+langchain
+langchain-community
+langchain-mistralai
+faiss-cpu
+sentence-transformers
+transformers
+torch
+pypdf
+python-dotenv
+tqdm
+numpy
+scikit-learn

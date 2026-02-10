@@ -1,0 +1,28 @@
+# Python virtual environment
+.venv/
+venv/
+
+# Environment variables
+.env
+
+# FAISS vector index
+faiss_index/
+ingestion_pipeline/faiss_index/
+
+# Logs
+logs/
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+
+# PDF data (private data)
+all_pdfs/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
