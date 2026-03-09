@@ -22,6 +22,7 @@ def run_ingestion():
 
     print("Splitting documents...")
     chunks = split_documents(docs)
+    print(("Total chunks created:", len(chunks)))
 
     print("Creating embeddings...")
     embeddings = get_embeddings()

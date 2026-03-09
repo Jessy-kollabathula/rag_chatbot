@@ -17,6 +17,9 @@ def get_retriever():
         allow_dangerous_deserialization=True
     )
 
+    # 🔍 Print number of chunks (vectors)
+    print(f"Total vectors stored in FAISS: {vectorstore.index.ntotal}")
+    
     # ✅ Advanced retrieval: MMR (diverse + better chunks)
     retriever = vectorstore.as_retriever(
         search_type="mmr",

@@ -1,48 +1,104 @@
 from search_pipeline.retriever import get_retriever
 from search_pipeline.llm import get_llm
 
+# -------------------------
+# In-Memory Conversation Store
+# -------------------------
+chat_sessions = {}
 
-def answer_question(question):
+def get_history(session_id):
+    return chat_sessions.get(session_id, [])
 
+def append_history(session_id, role, content):
+    if session_id not in chat_sessions:
+        chat_sessions[session_id] = []
+    chat_sessions[session_id].append({
+        "role": role,
+        "content": content
+    })
+
+    # Keep last 6 messages (3 exchanges)
+    chat_sessions[session_id] = chat_sessions[session_id][-6:]
+
+
+def answer_question(question, session_id="default", use_general=False):
     retriever = get_retriever()
     llm = get_llm()
 
-    # --- Step 1: Retrieve documents ---
-    docs = retriever.vectorstore.similarity_search_with_score(question, k=5)
+    # -------------------------
+    # STEP 1: Rewrite question using history (Conversational RAG)
+    # -------------------------
+    history = get_history(session_id)
+    if history:
+        history_text = "\n".join([f"{h['role']}: {h['content']}" for h in history])
+        rewrite_prompt = f"""
+Given the conversation history and the latest question,
+rewrite the question to be standalone.
 
-    print("\n🔍 Retrieved Chunks:\n")
+Conversation:
+{history_text}
 
-    context = []
-    scores = []
+Latest Question:
+{question}
 
-    for i, (doc, score) in enumerate(docs):
-        print(f"Chunk {i+1} (score={score:.3f}):\n{doc.page_content}\n")
-        context.append(doc.page_content.strip())
-        scores.append(score)
+Rewritten standalone question:
+"""
+        rewritten = llm.invoke(rewrite_prompt)
+        question = rewritten.content.strip()
 
-    # --- Step 2: Smart relevance check (dynamic threshold) ---
-    avg_score = sum(scores) / len(scores)
+    # -------------------------
+    # STEP 2: Retrieve
+    # -------------------------
+    docs_with_scores = retriever.vectorstore.similarity_search_with_score(question, k=5)
 
-    # keyword safety check
-    keyword_match = question.lower() in " ".join(context).lower()
+    # -------------------------
+    # STEP 2b: Print retrieved chunks for debug
+    # -------------------------
+    print("\n=== TOP 5 RETRIEVED CHUNKS ===\n")
+    for i, (doc, score) in enumerate(docs_with_scores, 1):
+        source = doc.metadata.get("source", "Unknown PDF")
+        page = doc.metadata.get("page", "Unknown Page")
+        print(f"Chunk {i}")
+        print(f"Score: {score:.4f}")
+        print(f"Source: {source}")
+        print(f"Page: {page}")
+        print("Preview:", doc.page_content[:300].replace("\n", " "))
+        print("-" * 60)
 
-    relevant = avg_score < 1.2 or keyword_match
+    SIMILARITY_THRESHOLD = 0.9
+    filtered_docs = [(doc, score) for doc, score in docs_with_scores if score < SIMILARITY_THRESHOLD]
 
-    # --- Outside document ---
-    if not relevant:
+    # -------------------------
+    # STEP 3: Outside documents
+    # -------------------------
+    if not filtered_docs:
+        if use_general:
+            response = llm.invoke(question)
+            append_history(session_id, "user", question)
+            append_history(session_id, "assistant", response.content)
+            return {
+                "status": "general",
+                "answer": response.content
+            }
 
-        choice = input(
-            "\n⚠️ Question may be outside the uploaded documents.\n"
-            "Answer using general knowledge? (yes/no): "
-        )
+        return {
+            "status": "outside",
+            "message": "This question is outside the uploaded documents. Can I answer using general knowledge?"
+        }
 
-        if choice.lower() != "yes":
-            return "Okay 👍 Please ask a question related to the uploaded documents."
+    # -------------------------
+    # STEP 4: Extract Context
+    # -------------------------
+    context = "\n\n".join(
+    [
+        f"Source {i+1} (Page {doc.metadata.get('page','?')}):\n{doc.page_content}"
+        for i, (doc, _) in enumerate(filtered_docs[:3])
+    ]
+)
 
-        resp = llm.invoke(question)
-        return resp.content if hasattr(resp, "content") else str(resp)
-
-    # --- Step 3: RAG Answer ---
+    # -------------------------
+    # KEEPING YOUR ORIGINAL PROMPT (UNCHANGED)
+    # -------------------------
     prompt = f"""
 You are an AI Teacher Assistant.
 
@@ -54,7 +110,7 @@ RULES:
 - Add bullet key points
 
 Context:
-{" ".join(context)}
+{context}
 
 Question:
 {question}
@@ -62,21 +118,32 @@ Question:
 Answer:
 """
 
-    resp = llm.invoke(prompt)
-    answer = resp.content if hasattr(resp, "content") else str(resp)
+    response = llm.invoke(prompt)
+    answer = response.content
 
-    # --- Insufficient context fallback ---
+    # -------------------------
+    # If LLM says insufficient
+    # -------------------------
     if "The document does not provide sufficient information." in answer:
+        return {
+            "status": "outside",
+            "message": "This question is outside the uploaded documents. Can I answer using general knowledge?"
+        }
 
-        choice = input(
-            "\n⚠️ Not enough info in documents.\n"
-            "Answer using general knowledge? (yes/no): "
-        )
+    # Save memory
+    append_history(session_id, "user", question)
+    append_history(session_id, "assistant", answer)
 
-        if choice.lower() == "yes":
-            resp = llm.invoke(question)
-            return resp.content if hasattr(resp, "content") else str(resp)
-
-        return "Okay 👍 Please ask a question related to the uploaded documents."
-
-    return answer
+    return {
+       "status": "doc",
+       "answer": answer,
+       "chunks": [
+           {
+               "text": doc.page_content[:250] + "...",
+               "page": doc.metadata.get("page", "Unknown"),
+               "source": doc.metadata.get("source", "Unknown"),
+               "score": float(score)
+           }
+           for doc, score in filtered_docs
+        ]
+    }
